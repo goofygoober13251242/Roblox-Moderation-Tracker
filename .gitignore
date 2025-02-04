@@ -1,171 +1,170 @@
-# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
+import requests
+import random
+import time
+import json
+import os
 
-# C extensions
-*.so
+# Your latest Discord Webhook URL
+DISCORD_WEBHOOK_URL = ""
 
-# Distribution / packaging
-.Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-MANIFEST
+# Database file to prevent scanning the same users multiple times
+DB_FILE = "tracked_users.json"
 
-# PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
-*.manifest
-*.spec
+# Suspicious chat keywords (expanded list)
+suspicious_keywords = [
+    "nsfw", "scam", "hack", "cheat", "underage", "groom", "exploit", "illegal", "porn",
+    "blackmail", "ddos", "darkweb", "cp", "ransomware", "virus", "malware", "phishing"
+]
 
-# Installer logs
-pip-log.txt
-pip-delete-this-directory.txt
+# Ban reasons & report reasons lists
+ban_reasons_list = [
+    "🚨 Grooming underage users",
+    "🚨 Uploading NSFW content",
+    "🚨 Running scams & fake giveaways",
+    "🚨 Selling accounts illegally",
+    "🚨 Distributing explicit material",
+    "🚨 Exploiting in games",
+    "🚨 Promoting hacking tools",
+    "🚨 Operating scam groups",
+    "🚨 Using bots for fake traffic",
+]
 
-# Unit test / coverage reports
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
+ban_durations_list = ["🔒 3 Days", "🔒 7 Days", "🔒 30 Days", "🔒 Permanent Ban"]
 
-# Translations
-*.mo
-*.pot
+# Function to load tracked users database
+def load_tracked_users():
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
-# Django stuff:
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
+# Function to save tracked users
+def save_tracked_users(data):
+    with open(DB_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
-# Flask stuff:
-instance/
-.webassets-cache
+# Function to get user info
+def get_user_info(user_id):
+    url = f"https://users.roblox.com/v1/users/{user_id}"
+    groups_url = f"https://groups.roblox.com/v2/users/{user_id}/groups/roles"
+    presence_url = f"https://presence.roblox.com/v1/presence/users"
+    friends_url = f"https://friends.roblox.com/v1/users/{user_id}/friends"
 
-# Scrapy stuff:
-.scrapy
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            username = data.get("name", f"Unknown User {user_id}")
+            created_date = data.get("created", "Unknown")[:10]
 
-# Sphinx documentation
-docs/_build/
+            account_year = int(created_date[:4]) if created_date[:4].isdigit() else 2025
+            if account_year < 2010:
+                return None
 
-# PyBuilder
-.pybuilder/
-target/
+            # Check last online
+            presence_response = requests.post(presence_url, json={"userIds": [user_id]}, timeout=5)
+            last_online = "Unknown"
+            if presence_response.status_code == 200:
+                presence_info = presence_response.json()
+                last_online = presence_info["userPresences"][0].get("lastOnline", "Unknown")
 
-# Jupyter Notebook
-.ipynb_checkpoints
+            # Get group names
+            group_response = requests.get(groups_url, timeout=5)
+            group_names = [group["group"]["name"] for group in group_response.json().get("data", [])] if group_response.status_code == 200 else []
 
-# IPython
-profile_default/
-ipython_config.py
+            # Get friends list and check if any are banned
+            friends_response = requests.get(friends_url, timeout=5)
+            banned_friends = []
+            if friends_response.status_code == 200:
+                friends = friends_response.json().get("data", [])
+                for friend in friends:
+                    if "Banned" in friend["name"]:
+                        banned_friends.append(friend["name"])
 
-# pyenv
-#   For a library or package, you might want to ignore these files since the code is
-#   intended to run in multiple environments; otherwise, check them in:
-# .python-version
+            return username, created_date, last_online, group_names, banned_friends
+    except requests.exceptions.RequestException:
+        pass
 
-# pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
-#Pipfile.lock
+    return None
 
-# UV
-#   Similar to Pipfile.lock, it is generally recommended to include uv.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#uv.lock
+# Function to scan chat logs for suspicious messages
+def get_suspicious_chat_logs(user_id):
+    chat_url = f"https://chat.roblox.com/v2/get-user-conversations"
+    try:
+        response = requests.get(chat_url, params={"userId": user_id}, timeout=5)
+        if response.status_code == 200:
+            chat_data = response.json()
+            return [
+                f"**Group:** {chat['title']} - **Message:** {chat['lastMessage']['content']}"
+                for chat in chat_data.get("conversations", [])
+                if any(keyword in chat["lastMessage"]["content"].lower() for keyword in suspicious_keywords)
+            ] or ["No suspicious messages found."]
+    except requests.exceptions.RequestException:
+        return ["⚠️ Failed to retrieve chat logs."]
+    
+    return ["No suspicious messages found."]
 
-# poetry
-#   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
-#   This is especially recommended for binary packages to ensure reproducibility, and is more
-#   commonly ignored for libraries.
-#   https://python-poetry.org/docs/basic-usage/#commit-your-poetrylock-file-to-version-control
-#poetry.lock
+# Function to add a new banned user and send to Discord
+def add_banned_user():
+    user_id = random.randint(100000000, 900000000)
+    tracked_users = load_tracked_users()
 
-# pdm
-#   Similar to Pipfile.lock, it is generally recommended to include pdm.lock in version control.
-#pdm.lock
-#   pdm stores project-wide configurations in .pdm.toml, but it is recommended to not include it
-#   in version control.
-#   https://pdm.fming.dev/latest/usage/project/#working-with-version-control
-.pdm.toml
-.pdm-python
-.pdm-build/
+    if str(user_id) in tracked_users:
+        return  
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow and github.com/pdm-project/pdm
-__pypackages__/
+    user_info = get_user_info(user_id)
+    if not user_info:
+        return  
 
-# Celery stuff
-celerybeat-schedule
-celerybeat.pid
+    username, created_date, last_online, group_names, banned_friends = user_info
+    ban_reason = random.choice(ban_reasons_list)
+    ban_duration = random.choice(ban_durations_list)
+    profile_url = f"https://www.roblox.com/users/{user_id}/profile"
 
-# SageMath parsed files
-*.sage.py
+    suspicious_logs = get_suspicious_chat_logs(user_id)
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
+    message = f"""
+══════════════════════════════
+🚨 **BANNED USER** 🚨
+══════════════════════════════
 
-# Spyder project settings
-.spyderproject
-.spyproject
+👤 **Username:** {username}
 
-# Rope project settings
-.ropeproject
+🆔 **User ID:** {user_id}
 
-# mkdocs documentation
-/site
+🔗 **Profile:** [View Profile]({profile_url})
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
+📅 **Account Created:** {created_date}
 
-# Pyre type checker
-.pyre/
+🕒 **Last Online:** {last_online}
 
-# pytype static type analyzer
-.pytype/
+🏢 **Groups Joined:** {", ".join(group_names) if group_names else "No groups found"}
 
-# Cython debug symbols
-cython_debug/
+🚫 **Banned Friends:** {", ".join(banned_friends) if banned_friends else "No banned friends detected"}
 
-# PyCharm
-#  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
-#  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#  and can be added to the global gitignore or merged into this file.  For a more nuclear
-#  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+⚠️ **Ban Reason:** {ban_reason}
 
-# PyPI configuration file
-.pypirc
+⏳ **Ban Duration:** {ban_duration}
+
+📝 **Suspicious Chat Logs:**
+{chr(10).join(suspicious_logs)}
+
+══════════════════════════════
+"""
+
+    send_to_discord(message)
+    tracked_users[str(user_id)] = True
+    save_tracked_users(tracked_users)
+
+# Function to send messages to Discord webhook
+def send_to_discord(message):
+    data = {"content": message}
+    requests.post(DISCORD_WEBHOOK_URL, json=data)
+
+# Run the script every 3 minutes
+print("🚀 Script is running... A new banned user will be added every 3 minutes.")
+
+while True:
+    add_banned_user()
+    print("⏳ Waiting 3 minutes for the next update...")
+    time.sleep(180)
